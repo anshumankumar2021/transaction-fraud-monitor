@@ -1,0 +1,627 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Transaction Fraud Monitor</title>
+<meta name="description" content="Live demo of a Kafka-based real-time card fraud detector: velocity bursts, amount spikes and impossible travel, scored as the stream plays.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Cpath d='M6 20h5l3-9 4 13 3-7h5' fill='none' stroke='white' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --surface-2: #f3f2ee;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #6f6d68;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --ring: rgba(11,11,11,0.10);
+  --accent: #2a78d6;
+  --r-velocity: #2a78d6;
+  --r-amount_spike: #eb6834;
+  --r-impossible_travel: #1baf7a;
+  --good: #0ca30c; --serious: #ec835a; --critical: #d03b3b; --warning: #fab219;
+  --good-ink: #006300; --critical-ink: #b3261e; --serious-ink: #9a3f14;
+  --flash: rgba(42,120,214,0.10);
+  --radius: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --surface-2: #232321;
+    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #9a988f;
+    --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
+    --accent: #3987e5;
+    --r-velocity: #3987e5; --r-amount_spike: #d95926; --r-impossible_travel: #199e70;
+    --good-ink: #0ca30c; --critical-ink: #ff8a80; --serious-ink: #ec835a;
+    --flash: rgba(57,135,229,0.16);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --surface-2: #232321;
+  --ink: #ffffff; --ink-2: #c3c2b7; --muted: #9a988f;
+  --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
+  --accent: #3987e5;
+  --r-velocity: #3987e5; --r-amount_spike: #d95926; --r-impossible_travel: #199e70;
+  --good-ink: #0ca30c; --critical-ink: #ff8a80; --serious-ink: #ec835a;
+  --flash: rgba(57,135,229,0.16);
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; overflow-anchor: none; }  /* rows stream in constantly; never let the browser re-anchor the page */
+.feed-wrap, .alerts { overflow-anchor: none; }
+body {
+  margin: 0; background: var(--page); color: var(--ink);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+a { color: var(--accent); text-underline-offset: 2px; }
+.wrap { max-width: 1180px; margin: 0 auto; padding: 0 16px; }
+header.top { padding: 28px 0 8px; }
+.eyebrow { font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; display: flex; align-items: center; gap: 8px; }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); box-shadow: 0 0 0 0 rgba(12,163,12,.5); animation: pulse 1.8s infinite; }
+.paused .live-dot { background: var(--muted); animation: none; }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(12,163,12,.45); } 70% { box-shadow: 0 0 0 7px rgba(12,163,12,0); } 100% { box-shadow: 0 0 0 0 rgba(12,163,12,0); } }
+h1 { font-size: clamp(26px, 4vw, 34px); line-height: 1.15; margin: 0 0 10px; letter-spacing: -0.01em; }
+.lede { color: var(--ink-2); max-width: 760px; margin: 0 0 14px; }
+.links { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; font-size: 14px; }
+.links img { display: block; height: 20px; }
+.btn, select {
+  font: inherit; font-size: 14px; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--ring); border-radius: 8px; padding: 7px 12px; cursor: pointer;
+  min-height: 36px;
+}
+.btn:hover, select:hover { background: var(--surface-2); }
+.btn:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn.primary { background: var(--accent); border-color: transparent; color: #fff; font-weight: 600; }
+.btn.primary:hover { filter: brightness(1.08); background: var(--accent); }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 18px 0 14px; }
+.controls .spacer { flex: 1; }
+.clock { font-variant-numeric: tabular-nums; color: var(--ink-2); font-size: 14px; }
+.clock b { color: var(--ink); font-weight: 600; }
+.card { background: var(--surface); border: 1px solid var(--ring); border-radius: var(--radius); }
+.card h2 { font-size: 15px; margin: 0; font-weight: 650; }
+.card .sub { color: var(--muted); font-size: 13px; margin: 2px 0 0; }
+.card-head { padding: 14px 16px 10px; display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+
+.kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.kpi { padding: 14px 16px; }
+.kpi .label { font-size: 13px; color: var(--ink-2); }
+.kpi .value { font-size: 28px; font-weight: 650; letter-spacing: -0.01em; line-height: 1.2; margin-top: 4px; }
+.kpi .note { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+.kpi-caption { color: var(--muted); font-size: 13px; margin: 8px 2px 18px; }
+
+.grid { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); gap: 12px; align-items: start; }
+.feed-wrap { height: 560px; overflow: auto; border-top: 1px solid var(--grid); }
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+thead th { position: sticky; top: 0; background: var(--surface); text-align: left; font-weight: 600; color: var(--muted); font-size: 12px; padding: 8px 10px; border-bottom: 1px solid var(--grid); z-index: 1; }
+tbody td { padding: 7px 10px; border-bottom: 1px solid var(--grid); vertical-align: middle; white-space: nowrap; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.time { font-variant-numeric: tabular-nums; color: var(--ink-2); }
+td.card-id { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; color: var(--ink-2); }
+tr.new { animation: flash 1.2s ease-out; }
+@keyframes flash { from { background: var(--flash); } to { background: transparent; } }
+tr.hit td { background: color-mix(in srgb, var(--surface-2) 70%, transparent); }
+
+.chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink); white-space: nowrap; }
+.chip i { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.badge svg { flex: none; }
+.b-ok { color: var(--muted); font-weight: 400; }
+.b-flagged { color: var(--good-ink); }
+.b-false { color: var(--serious-ink); }
+.b-missed { color: var(--critical-ink); }
+.b-later { color: var(--ink-2); font-weight: 500; }
+.result { display: flex; flex-direction: column; gap: 3px; }
+
+.side { display: grid; gap: 12px; }
+.tally { padding: 4px 16px 14px; display: grid; gap: 8px; }
+.tally-row { display: flex; justify-content: space-between; align-items: center; font-size: 14px; }
+.tally-row .n { font-variant-numeric: tabular-nums; font-weight: 600; }
+.divider { border: 0; border-top: 1px solid var(--grid); margin: 4px 0; }
+.alerts { list-style: none; margin: 0; padding: 0 0 6px; height: 262px; overflow: auto; border-top: 1px solid var(--grid); }
+.alerts li { padding: 9px 16px; border-bottom: 1px solid var(--grid); display: grid; gap: 2px; }
+.alerts .meta { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.alerts .detail { font-size: 13px; color: var(--ink-2); }
+.empty { color: var(--muted); font-size: 13.5px; padding: 14px 16px; }
+
+.chart-card { margin-top: 12px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; padding: 0 16px 6px; font-size: 13px; color: var(--ink-2); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 12px; height: 12px; border-radius: 3px; }
+#chart { position: relative; padding: 4px 8px 12px; border-radius: 8px; }
+#chart:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+#chart svg { display: block; width: 100%; height: 220px; overflow: visible; }
+#chart svg * { pointer-events: none; }  /* marks are redrawn often; keep the persistent <svg> as the hover target */
+.tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--ring); border-radius: 8px; padding: 8px 10px; font-size: 12.5px; box-shadow: 0 6px 20px rgba(0,0,0,.12); min-width: 170px; opacity: 0; transition: opacity .12s; z-index: 3; }
+.tip.show { opacity: 1; }
+.tip .t-title { color: var(--muted); margin-bottom: 4px; font-variant-numeric: tabular-nums; }
+.tip .t-row { display: flex; align-items: center; gap: 8px; }
+.tip .t-row b { font-variant-numeric: tabular-nums; min-width: 18px; }
+.tip .t-row i { width: 12px; height: 3px; border-radius: 2px; }
+
+.how { margin: 28px 0 8px; display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 12px; }
+.how .body { padding: 4px 16px 16px; color: var(--ink-2); font-size: 14px; }
+.how .body p { margin: 0 0 10px; }
+.diagram { padding: 8px 12px 14px; overflow-x: auto; }
+.diagram svg { width: 100%; min-width: 560px; height: auto; display: block; }
+.diagram text { font: 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: var(--ink); }
+.diagram .small { font-size: 10.5px; fill: var(--muted); }
+.diagram .box { fill: var(--surface-2); stroke: var(--axis); }
+.diagram .here { fill: color-mix(in srgb, var(--accent) 14%, var(--surface)); stroke: var(--accent); stroke-width: 1.5; }
+.diagram .arrow { stroke: var(--muted); stroke-width: 1.4; fill: none; marker-end: url(#ah); }
+.bench { width: 100%; font-size: 13.5px; }
+.bench td { padding: 7px 16px; white-space: normal; }
+.bench td:last-child { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+footer { color: var(--muted); font-size: 13px; padding: 20px 0 36px; }
+.loading { opacity: .55; transition: opacity .2s; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+@media (max-width: 900px) {
+  .kpis { grid-template-columns: repeat(2, 1fr); }
+  .grid, .how { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 560px) {
+  .feed-wrap { height: 440px; }
+  .col-merchant, .col-card { display: none; }
+  .kpi .value { font-size: 24px; }
+  tbody td, thead th { padding-left: 8px; padding-right: 8px; }
+  .controls .spacer { display: none; }
+  .clock { width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  tr.new { animation: none; }
+  .live-dot { animation: none; }
+}
+</style>
+</head>
+<body>
+<div class="wrap" id="app">
+  <header class="top">
+    <p class="eyebrow"><span class="live-dot" aria-hidden="true"></span><span id="liveLabel">Live demo</span></p>
+    <h1>Real-Time Transaction Fraud Monitor</h1>
+    <p class="lede">A simulated week of card transactions streams past the same detection rules the project's Kafka detector runs.
+      Each purchase is checked for bursts of rapid spending, amounts far above the card's normal, and purchases in two countries too far apart to travel between.
+      The simulator plants fraud in the stream, so every alert can be checked against the truth.</p>
+    <div class="links">
+      <a href="https://github.com/anshumankumar2021/transaction-fraud-monitor">Source on GitHub</a>
+      <a href="https://github.com/anshumankumar2021/transaction-fraud-monitor/actions/workflows/ci.yml" aria-label="CI status"><img src="https://github.com/anshumankumar2021/transaction-fraud-monitor/actions/workflows/ci.yml/badge.svg" alt="CI status" width="92" height="20"></a>
+      <span style="color:var(--muted)">by Anshuman Kumar</span>
+    </div>
+  </header>
+
+  <div class="controls" role="group" aria-label="Playback controls">
+    <button class="btn primary" id="playBtn" type="button" aria-pressed="false">Pause</button>
+    <label class="sr" for="speed">Playback speed</label>
+    <select id="speed" aria-label="Playback speed">
+      <option value="1" selected>1× speed</option>
+      <option value="4">4× speed</option>
+      <option value="16">16× speed</option>
+    </select>
+    <button class="btn" id="newBtn" type="button">New stream</button>
+    <span class="spacer"></span>
+    <span class="clock" aria-live="off">Simulated clock <b id="clock">–</b> · stream <b id="seedLbl">–</b></span>
+  </div>
+
+  <section aria-labelledby="kpiTitle">
+    <h2 id="kpiTitle" class="sr">Results for the full simulated week</h2>
+    <div class="kpis">
+      <div class="card kpi"><div class="label">Planted fraud caught</div><div class="value" id="kCaught">–</div><div class="note" id="kCaughtN">&nbsp;</div></div>
+      <div class="card kpi"><div class="label">Alerts that were real fraud</div><div class="value" id="kPrec">–</div><div class="note" id="kPrecN">&nbsp;</div></div>
+      <div class="card kpi"><div class="label">Legit purchases wrongly flagged</div><div class="value" id="kFpr">–</div><div class="note" id="kFprN">&nbsp;</div></div>
+      <div class="card kpi"><div class="label">Time to check one purchase</div><div class="value" id="kLat">–</div><div class="note" id="kLatN">&nbsp;</div></div>
+    </div>
+    <p class="kpi-caption" id="kpiCaption">Scoring the full simulated week…</p>
+  </section>
+
+  <div class="grid">
+    <section class="card" aria-labelledby="feedTitle">
+      <div class="card-head">
+        <div><h2 id="feedTitle">Transaction stream</h2><p class="sub">Newest first · last 80 shown</p></div>
+      </div>
+      <div class="feed-wrap" id="feedWrap">
+        <table>
+          <thead><tr>
+            <th scope="col">Time</th>
+            <th scope="col" class="col-card">Card</th>
+            <th scope="col">Country</th>
+            <th scope="col" class="col-merchant">Merchant</th>
+            <th scope="col" class="num">Amount</th>
+            <th scope="col">Result</th>
+          </tr></thead>
+          <tbody id="feed"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <div class="side">
+      <section class="card" aria-labelledby="tallyTitle">
+        <div class="card-head"><div><h2 id="tallyTitle">This replay so far</h2><p class="sub" id="tallySub">&nbsp;</p></div></div>
+        <div class="tally">
+          <div class="tally-row"><span>Transactions checked</span><span class="n" id="tChecked">0</span></div>
+          <hr class="divider">
+          <div class="tally-row"><span class="chip"><i style="background:var(--r-velocity)"></i>Rapid-purchase burst</span><span class="n" id="tVel">0</span></div>
+          <div class="tally-row"><span class="chip"><i style="background:var(--r-amount_spike)"></i>Unusually large amount</span><span class="n" id="tAmt">0</span></div>
+          <div class="tally-row"><span class="chip"><i style="background:var(--r-impossible_travel)"></i>Impossible travel</span><span class="n" id="tTrv">0</span></div>
+          <hr class="divider">
+          <div class="tally-row"><span class="badge b-flagged" id="lblFlagged"></span><span class="n" id="tFlagged">0</span></div>
+          <div class="tally-row"><span class="badge b-false" id="lblFalse"></span><span class="n" id="tFalse">0</span></div>
+          <div class="tally-row"><span class="badge b-missed" id="lblMissed"></span><span class="n" id="tMissed">0</span></div>
+        </div>
+      </section>
+      <section class="card" aria-labelledby="alertsTitle">
+        <div class="card-head"><div><h2 id="alertsTitle">Alerts</h2><p class="sub">What the detector would publish to the <code>alerts</code> topic</p></div></div>
+        <ul class="alerts" id="alerts"><li class="empty" id="alertsEmpty">No alerts yet.</li></ul>
+      </section>
+    </div>
+  </div>
+
+  <section class="card chart-card" aria-labelledby="chartTitle">
+    <div class="card-head"><div><h2 id="chartTitle">Alerts per 15 minutes of simulated time</h2><p class="sub">Fills in as the replay plays</p></div></div>
+    <div class="legend" aria-hidden="true">
+      <span><i style="background:var(--r-velocity)"></i>Rapid-purchase burst</span>
+      <span><i style="background:var(--r-amount_spike)"></i>Unusually large amount</span>
+      <span><i style="background:var(--r-impossible_travel)"></i>Impossible travel</span>
+    </div>
+    <div id="chart"><div class="tip" id="tip" role="status"></div></div>
+  </section>
+
+  <section class="how" aria-labelledby="howTitle">
+    <div class="card">
+      <div class="card-head"><div><h2 id="howTitle">How the full pipeline works</h2><p class="sub">This page runs the highlighted box</p></div></div>
+      <div class="diagram">
+        <svg viewBox="0 0 640 250" role="img" aria-label="Producer publishes to the Kafka transactions topic, keyed by card. Three detector replicas in one consumer group read it, publish alerts, send bad messages to a dead-letter topic, and expose metrics to Prometheus and Grafana.">
+          <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor" style="color:var(--muted)"/></marker></defs>
+          <rect class="box" x="8" y="92" width="108" height="56" rx="8"/>
+          <text x="62" y="116" text-anchor="middle">Producer</text>
+          <text x="62" y="133" text-anchor="middle" class="small">keyed by card</text>
+          <path class="arrow" d="M116 120H150"/>
+          <rect class="box" x="152" y="72" width="130" height="96" rx="8"/>
+          <text x="217" y="96" text-anchor="middle">Kafka</text>
+          <text x="217" y="112" text-anchor="middle" class="small">transactions topic</text>
+          <g class="small" style="fill:var(--muted)">
+            <rect x="170" y="124" width="94" height="8" rx="2" style="fill:var(--grid)"/>
+            <rect x="170" y="136" width="94" height="8" rx="2" style="fill:var(--grid)"/>
+            <rect x="170" y="148" width="94" height="8" rx="2" style="fill:var(--grid)"/>
+          </g>
+          <path class="arrow" d="M282 120H316"/>
+          <rect class="here" x="318" y="58" width="150" height="124" rx="8"/>
+          <text x="393" y="82" text-anchor="middle" style="font-weight:600">Detector group</text>
+          <text x="393" y="98" text-anchor="middle" class="small">3 replicas · rules.py</text>
+          <rect class="box" x="334" y="110" width="118" height="18" rx="4"/><text x="393" y="123" text-anchor="middle" class="small">velocity</text>
+          <rect class="box" x="334" y="132" width="118" height="18" rx="4"/><text x="393" y="145" text-anchor="middle" class="small">amount spike</text>
+          <rect class="box" x="334" y="154" width="118" height="18" rx="4"/><text x="393" y="167" text-anchor="middle" class="small">impossible travel</text>
+          <path class="arrow" d="M468 88H508"/>
+          <rect class="box" x="510" y="64" width="122" height="44" rx="8"/><text x="571" y="91" text-anchor="middle">alerts topic</text>
+          <path class="arrow" d="M468 120H508"/>
+          <rect class="box" x="510" y="112" width="122" height="44" rx="8"/><text x="571" y="139" text-anchor="middle">dead-letter topic</text>
+          <path class="arrow" d="M393 182V212H508"/>
+          <rect class="box" x="510" y="192" width="122" height="44" rx="8"/><text x="571" y="213" text-anchor="middle">Prometheus</text><text x="571" y="228" text-anchor="middle" class="small">+ Grafana</text>
+          <text x="393" y="42" text-anchor="middle" class="small" style="fill:var(--accent)">running on this page</text>
+        </svg>
+      </div>
+      <div class="body">
+        <p>Each purchase is keyed by card number, so all of a card's purchases land on the same Kafka partition, in order. That lets each detector replica keep per-card history in memory. Offsets are committed only after alerts are written (at-least-once), and malformed messages go to a dead-letter topic.</p>
+        <p>This page can't run Kafka: Vercel functions are short-lived, and Kafka needs an always-on broker and consumers. So the detector's rule engine (<code>app/rules.py</code>) runs here on a stream simulated for your visit. The full Kafka pipeline runs against real Apache Kafka in CI on every commit, and the build fails unless its alerts match this engine's alerts exactly.</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><div><h2>Kafka pipeline benchmark</h2><p class="sub">Measured end to end through Kafka, from the README</p></div></div>
+      <table class="bench"><tbody>
+        <tr><td>Planted fraud caught (206K txns, 1,500 incidents)</td><td>96.9%</td></tr>
+        <tr><td>Alerts that were real fraud</td><td>92.6%</td></tr>
+        <tr><td>Throughput, 3 detectors × 6 partitions</td><td>~49K msg/s</td></tr>
+        <tr><td>End-to-end latency p95 at 5K msg/s</td><td>61 ms</td></tr>
+        <tr><td>Malformed messages dead-lettered</td><td>3 of 3</td></tr>
+        <tr><td>Kafka alerts vs. offline engine</td><td>identical</td></tr>
+      </tbody></table>
+      <p class="sub" style="padding:10px 16px 16px">Throughput and latency were measured on a 2-vCPU VM against Tansu, a Kafka-compatible broker. On real Apache Kafka in GitHub Actions, p95 was 79 ms at full speed. <a href="https://github.com/anshumankumar2021/transaction-fraud-monitor#results">Details</a></p>
+    </div>
+  </section>
+
+  <footer>Synthetic data only. No real cards or people. Built by Anshuman Kumar · <a href="https://github.com/anshumankumar2021/transaction-fraud-monitor">GitHub</a></footer>
+</div>
+
+<script>
+(() => {
+  "use strict";
+  const RULES = {
+    velocity: { label: "Rapid-purchase burst", color: "var(--r-velocity)" },
+    amount_spike: { label: "Unusually large amount", color: "var(--r-amount_spike)" },
+    impossible_travel: { label: "Impossible travel", color: "var(--r-impossible_travel)" },
+  };
+  const RULE_KEYS = Object.keys(RULES);
+  const COUNTRY = { US:"United States", CA:"Canada", MX:"Mexico", BR:"Brazil", GB:"United Kingdom", FR:"France", DE:"Germany", IN:"India", SG:"Singapore", JP:"Japan", AU:"Australia", AE:"UAE", NG:"Nigeria", ZA:"South Africa" };
+  const EVENT_SECONDS_PER_REAL_SECOND = 36;   // at 1× speed: about 3 transactions per second, readable
+  const MAX_ROWS = 80, MAX_ALERTS = 60, BIN = 900;
+
+  const $ = (id) => document.getElementById(id);
+  const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
+  const svgNS = "http://www.w3.org/2000/svg";
+  const sv = (tag, attrs) => { const n = document.createElementNS(svgNS, tag); for (const k in attrs) n.setAttribute(k, attrs[k]); return n; };
+
+  const ICONS = {
+    check: '<path d="M3 8.5l3 3 7-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+    bang: '<path d="M8 3v6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="8" cy="12.5" r="1.2" fill="currentColor"/>',
+    x: '<path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
+    later: '<path d="M4 3v5a3 3 0 003 3h6M10 8l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>',
+  };
+  function badge(kind) {
+    const map = {
+      flagged: ["b-flagged", "check", "Caught fraud"],
+      false_alarm: ["b-false", "bang", "False alarm"],
+      missed: ["b-missed", "x", "Missed fraud"],
+      caught_later: ["b-later", "later", "Fraud · flagged later"],
+      ok: ["b-ok", null, "OK"],
+    }[kind];
+    const b = el("span", "badge " + map[0]);
+    if (map[1]) {
+      const s = document.createElementNS(svgNS, "svg");
+      s.setAttribute("width", "13"); s.setAttribute("height", "13"); s.setAttribute("viewBox", "0 0 16 16"); s.setAttribute("aria-hidden", "true");
+      s.innerHTML = ICONS[map[1]];
+      b.appendChild(s);
+    }
+    b.appendChild(document.createTextNode(map[2]));
+    return b;
+  }
+  function chip(rule) {
+    const c = el("span", "chip");
+    const i = el("i"); i.style.background = RULES[rule].color;
+    c.append(i, document.createTextNode(RULES[rule].label));
+    return c;
+  }
+  const fmtTime = (ts) => {
+    const d = Math.floor(ts / 86400) + 1, s = Math.floor(ts % 86400);
+    const hh = String(Math.floor(s / 3600)).padStart(2, "0"), mm = String(Math.floor(s % 3600 / 60)).padStart(2, "0"), ss = String(s % 60).padStart(2, "0");
+    return { day: "Day " + d, clock: `${hh}:${mm}:${ss}` };
+  };
+  const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+  const pct = (x, d = 1) => (x * 100).toFixed(d) + "%";
+
+  $("lblFlagged").replaceWith(Object.assign(badge("flagged"), { id: "lblFlagged" }));
+  $("lblFalse").replaceWith(Object.assign(badge("false_alarm"), { id: "lblFalse" }));
+  $("lblMissed").replaceWith(Object.assign(badge("missed"), { id: "lblMissed" }));
+
+  // ---- state
+  let data = null, idx = 0, simTime = 0, playing = true, lastFrame = 0, streamNo = 0;
+  let tally, bins, binStart;
+  const speedSel = $("speed");
+
+  function resetTally() {
+    tally = { checked: 0, velocity: 0, amount_spike: 0, impossible_travel: 0, flagged: 0, false_alarm: 0, missed: 0 };
+    bins = []; idx = 0;
+    $("feed").textContent = "";
+    const ul = $("alerts"); ul.textContent = ""; ul.appendChild(Object.assign(el("li", "empty", "No alerts yet."), { id: "alertsEmpty" }));
+  }
+
+  async function load(seed) {
+    document.body.classList.add("loading-state");
+    $("app").classList.add("loading");
+    $("kpiCaption").textContent = "Scoring a fresh simulated week…";
+    try {
+      const res = await fetch("/api/simulate?seed=" + seed);
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      data = await res.json();
+    } catch (err) {
+      $("kpiCaption").textContent = "Couldn't reach the simulator (" + err.message + "). Try “New stream”.";
+      $("app").classList.remove("loading");
+      return;
+    }
+    $("app").classList.remove("loading");
+    streamNo += 1;
+    resetTally();
+    const rows = data.replay.rows;
+    binStart = Math.floor(rows[0][0] / BIN) * BIN;
+    const nBins = Math.ceil((rows[rows.length - 1][0] - binStart + 1) / BIN);
+    bins = Array.from({ length: nBins }, () => ({ velocity: 0, amount_spike: 0, impossible_travel: 0 }));
+    simTime = rows[0][0];
+    renderKpis();
+    $("seedLbl").textContent = "#" + data.seed;
+    renderChart();
+    updateTally();
+  }
+
+  function renderKpis() {
+    const m = data.metrics;
+    $("kCaught").textContent = pct(m.caught / m.incidents);
+    $("kCaughtN").textContent = `${m.caught} of ${m.incidents} planted incidents`;
+    $("kPrec").textContent = pct(m.precision);
+    $("kPrecN").textContent = `of ${m.alerted_txns.toLocaleString()} flagged purchases`;
+    $("kFpr").textContent = pct(m.false_positive_rate, 2);
+    $("kFprN").textContent = `≈ 1 in ${Math.round(1 / m.false_positive_rate).toLocaleString()} legit purchases`;
+    $("kLat").textContent = m.eval_p99_us.toFixed(1) + " µs";
+    $("kLatN").textContent = `p99 · median ${m.eval_p50_us} µs`;
+    const bt = m.by_type;
+    $("kpiCaption").textContent =
+      `Scored over the full simulated week: ${m.events.toLocaleString()} transactions from ${data.config.cards.toLocaleString()} cards, checked in ${Math.round(m.evaluate_s * 1000)} ms on this server. ` +
+      `Caught ${bt.velocity.caught}/${bt.velocity.total} bursts, ${bt.amount_spike.caught}/${bt.amount_spike.total} large amounts, ${bt.impossible_travel.caught}/${bt.impossible_travel.total} impossible trips. ` +
+      `The replay below plays a ${Math.round((data.replay.rows.at(-1)[0] - data.replay.rows[0][0]) / 3600 * 10) / 10}-hour stretch of it.`;
+  }
+
+  function addRow(r) {
+    const [ts, card, amount, country, merchant, truth, alerts, status] = r;
+    const t = fmtTime(ts);
+    const tr = el("tr", "new" + (alerts.length || truth ? " hit" : ""));
+    const tdT = el("td", "time"); tdT.textContent = t.clock; tdT.title = t.day + " " + t.clock;
+    const tdC = el("td", "card-id col-card", "•••• " + card.slice(-4));
+    const tdCo = el("td", null, country); tdCo.title = COUNTRY[country] || country;
+    const tdM = el("td", "col-merchant", merchant);
+    const tdA = el("td", "num", money.format(amount));
+    const tdR = el("td");
+    const box = el("div", "result");
+    box.appendChild(badge(status));
+    for (const [rule] of alerts) box.appendChild(chip(rule));
+    tdR.appendChild(box);
+    tr.append(tdT, tdC, tdCo, tdM, tdA, tdR);
+    const body = $("feed");
+    body.insertBefore(tr, body.firstChild);
+    while (body.children.length > MAX_ROWS) body.removeChild(body.lastChild);
+
+    tally.checked += 1;
+    if (status === "flagged") tally.flagged += 1;
+    if (status === "false_alarm") tally.false_alarm += 1;
+    if (status === "missed") tally.missed += 1;
+    if (alerts.length) {
+      const b = bins[Math.floor((ts - binStart) / BIN)];
+      for (const [rule, detail] of alerts) {
+        tally[rule] += 1;
+        if (b) b[rule] += 1;
+        addAlert(ts, card, rule, detail, status);
+      }
+    }
+  }
+
+  function addAlert(ts, card, rule, detail, status) {
+    const ul = $("alerts");
+    const empty = $("alertsEmpty"); if (empty) empty.remove();
+    const li = el("li");
+    const top = el("div"); top.style.display = "flex"; top.style.justifyContent = "space-between"; top.style.gap = "8px"; top.style.flexWrap = "wrap";
+    top.append(chip(rule), badge(status === "false_alarm" ? "false_alarm" : "flagged"));
+    const t = fmtTime(ts);
+    li.append(top, el("div", "detail", detail), el("div", "meta", `${t.day} ${t.clock} · card •••• ${card.slice(-4)}`));
+    ul.insertBefore(li, ul.firstChild);
+    while (ul.children.length > MAX_ALERTS) ul.removeChild(ul.lastChild);
+  }
+
+  function updateTally() {
+    $("tChecked").textContent = tally.checked.toLocaleString();
+    $("tVel").textContent = tally.velocity; $("tAmt").textContent = tally.amount_spike; $("tTrv").textContent = tally.impossible_travel;
+    $("tFlagged").textContent = tally.flagged; $("tFalse").textContent = tally.false_alarm; $("tMissed").textContent = tally.missed;
+    const total = data ? data.replay.rows.length : 0;
+    $("tallySub").textContent = total ? `${Math.round(tally.checked / total * 100)}% of this ${total.toLocaleString()}-transaction replay` : "";
+  }
+
+  // ---- chart: stacked columns per 15-minute bin
+  let chartGeom = null;
+  function renderChart() {
+    const host = $("chart");
+    let svg = host.querySelector("svg");
+    if (!svg) { svg = sv("svg", { role: "img" }); host.insertBefore(svg, $("tip")); }
+    const W = Math.max(host.clientWidth - 16, 280), H = 220, L = 34, R = 6, T = 10, B = 26;
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.setAttribute("aria-label", "Stacked columns of alerts per 15 minutes by rule. Exact counts are in the tally panel.");
+    svg.textContent = "";
+    const n = bins.length || 1;
+    const maxV = Math.max(4, ...bins.map(b => b.velocity + b.amount_spike + b.impossible_travel));
+    const nice = Math.ceil(maxV / 4) * 4;
+    const y = v => T + (H - T - B) * (1 - v / nice);
+    for (let k = 0; k <= 4; k++) {
+      const v = nice * k / 4, yy = y(v);
+      svg.appendChild(sv("line", { x1: L, x2: W - R, y1: yy, y2: yy, stroke: k === 0 ? "var(--axis)" : "var(--grid)", "stroke-width": 1 }));
+      const tx = sv("text", { x: L - 6, y: yy + 4, "text-anchor": "end", "font-size": 11, fill: "var(--muted)", style: "font-variant-numeric:tabular-nums" });
+      tx.textContent = v; svg.appendChild(tx);
+    }
+    const slot = (W - L - R) / n, bw = Math.max(3, Math.min(28, slot - 4));
+    chartGeom = { L, slot, n, W };
+    if (hoverIdx != null && hoverIdx < n) {
+      svg.appendChild(sv("rect", { x: L + hoverIdx * slot, y: T, width: slot, height: H - T - B, fill: "var(--surface-2)" }));
+    }
+    bins.forEach((b, i) => {
+      const x = L + i * slot + (slot - bw) / 2;
+      let acc = 0;
+      const segs = RULE_KEYS.filter(k => b[k] > 0);
+      segs.forEach((k, j) => {
+        const y0 = y(acc), y1 = y(acc + b[k]); acc += b[k];
+        const gap = j > 0 ? 2 : 0;                 // 2px surface gap between stacked segments
+        const h = Math.max(1, y0 - y1 - gap);
+        const top = j === segs.length - 1;
+        const r = top ? Math.min(4, bw / 2, h) : 0;
+        const d = top
+          ? `M${x},${y0 - gap} V${y1 + r} Q${x},${y1} ${x + r},${y1} H${x + bw - r} Q${x + bw},${y1} ${x + bw},${y1 + r} V${y0 - gap} Z`
+          : `M${x},${y0 - gap} V${y1} H${x + bw} V${y0 - gap} Z`;
+        svg.appendChild(sv("path", { d, fill: RULES[k].color }));
+      });
+      if (i % Math.ceil(n / 8) === 0) {
+        const tx = sv("text", { x: x + bw / 2, y: H - 8, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)", style: "font-variant-numeric:tabular-nums" });
+        tx.textContent = fmtTime(binStart + i * BIN).clock.slice(0, 5);
+        svg.appendChild(tx);
+      }
+    });
+    if (hoverIdx != null) showTip(hoverIdx);   // keep the readout alive across redraws
+  }
+  // Hover lives on the container, not on per-column rects, so it survives the chart redrawing every few hundred ms.
+  // The whole column slot is the hit target, which is wider than the bar.
+  let hoverIdx = null;
+  const chartHost = $("chart");
+  chartHost.tabIndex = 0;
+  chartHost.setAttribute("aria-label", "Alerts per 15 minutes chart. Use left and right arrow keys to read each interval.");
+  chartHost.addEventListener("pointermove", (e) => {
+    if (!chartGeom) return;
+    const svg = chartHost.querySelector("svg"); const r = svg.getBoundingClientRect();
+    const x = (e.clientX - r.left) * (chartGeom.W / r.width);
+    const i = Math.floor((x - chartGeom.L) / chartGeom.slot);
+    const next = i >= 0 && i < chartGeom.n ? i : null;
+    if (next !== hoverIdx) { hoverIdx = next; renderChart(); }
+    if (next == null) hideTip();
+  });
+  chartHost.addEventListener("pointerleave", () => { hoverIdx = null; hideTip(); renderChart(); });
+  chartHost.addEventListener("keydown", (e) => {
+    if (!chartGeom || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+    e.preventDefault();
+    const n = chartGeom.n, cur = hoverIdx ?? -1;
+    hoverIdx = e.key === "Home" ? 0 : e.key === "End" ? n - 1 : Math.max(0, Math.min(n - 1, cur + (e.key === "ArrowRight" ? 1 : -1)));
+    renderChart();
+  });
+  chartHost.addEventListener("focus", () => { if (chartGeom) { hoverIdx = hoverIdx ?? 0; renderChart(); } });
+  chartHost.addEventListener("blur", () => { hoverIdx = null; hideTip(); renderChart(); });
+
+  function showTip(i) {
+    const tip = $("tip"), b = bins[i]; if (!b) return;
+    tip.textContent = "";
+    const s = fmtTime(binStart + i * BIN), eT = fmtTime(binStart + (i + 1) * BIN);
+    tip.appendChild(el("div", "t-title", `${s.day} ${s.clock.slice(0,5)}–${eT.clock.slice(0,5)}`));
+    for (const k of RULE_KEYS) {
+      const row = el("div", "t-row"); const sw = el("i"); sw.style.background = RULES[k].color;
+      row.append(sw, el("b", null, String(b[k])), el("span", null, RULES[k].label));
+      tip.appendChild(row);
+    }
+    const host = $("chart"), hr = host.getBoundingClientRect();
+    const svg = host.querySelector("svg"), scale = svg.getBoundingClientRect().width / chartGeom.W;
+    const cx = (chartGeom.L + (i + 0.5) * chartGeom.slot) * scale + 8;
+    let left = cx + 14; if (left + 190 > hr.width) left = cx - 204;
+    tip.style.left = Math.max(4, left) + "px"; tip.style.top = "8px";
+    tip.classList.add("show");
+  }
+  function hideTip() { $("tip").classList.remove("show"); }
+
+  // ---- playback loop
+  let chartDirty = false, lastChart = 0;
+  function frame(now) {
+    requestAnimationFrame(frame);
+    if (!data) { lastFrame = now; return; }
+    const dt = Math.min(0.25, (now - lastFrame) / 1000); lastFrame = now;
+    if (!playing) return;
+    const rows = data.replay.rows;
+    simTime += dt * EVENT_SECONDS_PER_REAL_SECOND * Number(speedSel.value);
+    let added = 0;
+    while (idx < rows.length && rows[idx][0] <= simTime && added < 40) { addRow(rows[idx]); idx++; added++; chartDirty = true; }
+    if (added) updateTally();
+    const t = fmtTime(Math.min(simTime, rows.at(-1)[0]));
+    $("clock").textContent = `${t.day} · ${t.clock}`;
+    if (chartDirty && now - lastChart > 400) { renderChart(); chartDirty = false; lastChart = now; }
+    if (idx >= rows.length && !loadingNext) {
+      loadingNext = true;
+      setTimeout(() => { load(randomSeed()).then(() => { loadingNext = false; }); }, 2500);
+    }
+  }
+  let loadingNext = false;
+  const randomSeed = () => Math.floor(Math.random() * 999_999) + 1;
+
+  $("playBtn").addEventListener("click", () => {
+    playing = !playing;
+    $("playBtn").textContent = playing ? "Pause" : "Resume";
+    $("playBtn").setAttribute("aria-pressed", String(!playing));
+    document.body.classList.toggle("paused", !playing);
+    $("liveLabel").textContent = playing ? "Live demo" : "Paused";
+  });
+  $("newBtn").addEventListener("click", () => load(randomSeed()));
+  let rT; window.addEventListener("resize", () => { clearTimeout(rT); rT = setTimeout(() => data && renderChart(), 150); });
+
+  const initial = Number(new URLSearchParams(location.search).get("seed")) || randomSeed();
+  load(initial);
+  requestAnimationFrame((t) => { lastFrame = t; frame(t); });
+})();
+</script>
+</body>
+</html>
