@@ -1,0 +1,10 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "outputDirectory": "public",
+  "functions": {
+    "api/simulate.py": {
+      "includeFiles": "app/**",
+      "maxDuration": 10
+    }
+  }
+}
