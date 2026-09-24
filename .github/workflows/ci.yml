@@ -1,0 +1,31 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install -r requirements-dev.txt
+      - run: pytest -q
+      - run: python -m scripts.evaluate --normal 50000 --incidents 300
+  image:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t txn-stream-monitor:ci .
+  e2e-kafka:
+    runs-on: ubuntu-latest
+    needs: test
+    services:
+      kafka:
+        image: apache/kafka:3.7.0
+        ports: ["9092:9092"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install -r requirements-dev.txt
+      - run: python -m scripts.evaluate --kafka localhost:9092 --normal 50000 --incidents 300
