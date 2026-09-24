@@ -61,8 +61,31 @@ def offline(args):
     return score(events, labels, alerted, el, "offline")
 
 
-def kafka(args):
+def drain(bootstrap: str, topic: str, timeout_s: float = 60) -> list[bytes]:
+    """Read a topic from the beginning until it goes quiet.
+
+    Waits for a partition assignment first: real Kafka delays the first group
+    rebalance (group.initial.rebalance.delay.ms, 3s by default), so polling
+    "until empty" without this can exit before any partition is assigned.
+    """
     from confluent_kafka import Consumer
+
+    c = Consumer({"bootstrap.servers": bootstrap, "group.id": f"drain-{uuid.uuid4().hex[:6]}",
+                  "auto.offset.reset": "earliest", "enable.auto.commit": False})
+    c.subscribe([topic])
+    out: list[bytes] = []
+    deadline, empty = time.time() + timeout_s, 0
+    while time.time() < deadline and empty < 3:
+        batch = c.consume(1000, timeout=1)
+        if not c.assignment():
+            continue
+        empty = empty + 1 if not batch else 0
+        out.extend(m.value() for m in batch if not m.error())
+    c.close()
+    return out
+
+
+def kafka(args):
     from confluent_kafka.admin import AdminClient, NewTopic
 
     from app.detector import Detector
@@ -112,31 +135,29 @@ def kafka(args):
     for t in threads:
         t.join()
 
-    c = Consumer({"bootstrap.servers": args.kafka, "group.id": f"eval-{run}", "auto.offset.reset": "earliest"})
-    c.subscribe([t_alert])
-    alerted: set[str] = set()
-    empty = 0
-    while empty < 5:
-        batch = c.consume(1000, timeout=1)
-        empty = empty + 1 if not batch else 0
-        for m in batch:
-            if not m.error():
-                alerted.add(json.loads(m.value())["txn_id"])
-    c.close()
-    dlq = Consumer({"bootstrap.servers": args.kafka, "group.id": f"dlq-{run}", "auto.offset.reset": "earliest"})
-    dlq.subscribe([t_dlq])
-    n_dlq, empty = 0, 0
-    while empty < 3:
-        b = dlq.consume(100, timeout=1)
-        empty = empty + 1 if not b else 0
-        n_dlq += sum(1 for m in b if not m.error())
-    dlq.close()
+    alerted = {json.loads(v)["txn_id"] for v in drain(args.kafka, t_alert)}
+    n_dlq = len(drain(args.kafka, t_dlq))
 
     lats = sorted(x for d in detectors for x in d.latencies)
     pct = {p: round(lats[min(int(len(lats) * p), len(lats) - 1)] * 1000, 1) for p in (0.5, 0.95, 0.99)}
     print(f"dead-lettered: {n_dlq}/3 malformed; end-to-end latency ms p50={pct[0.5]} p95={pct[0.95]} p99={pct[0.99]}")
     res = score(events, labels, alerted, elapsed, f"kafka x{args.replicas} replicas, {args.partitions} partitions, rate={args.rate or 'max'}")
     res.update({"dead_lettered": n_dlq, "e2e_latency_ms": pct})
+
+    if args.check:
+        # The pipeline must reproduce the offline rule engine exactly and dead-letter every bad message.
+        eng, expected = RuleEngine(), set()
+        for e in events:
+            if eng.evaluate(e):
+                expected.add(e["txn_id"])
+        problems = []
+        if alerted != expected:
+            problems.append(f"alerts differ from offline: {len(alerted ^ expected)} mismatched txns")
+        if n_dlq != 3:
+            problems.append(f"expected 3 dead-lettered messages, got {n_dlq}")
+        if problems:
+            raise SystemExit("CHECK FAILED: " + "; ".join(problems))
+        print("CHECK PASSED: Kafka alerts identical to offline, 3/3 malformed messages dead-lettered")
     return res
 
 
@@ -150,5 +171,6 @@ if __name__ == "__main__":
     ap.add_argument("--partitions", type=int, default=6)
     ap.add_argument("--replicas", type=int, default=3)
     ap.add_argument("--rate", type=float, default=0.0)
+    ap.add_argument("--check", action="store_true", help="fail unless Kafka results match offline exactly")
     a = ap.parse_args()
     kafka(a) if a.kafka else offline(a)
