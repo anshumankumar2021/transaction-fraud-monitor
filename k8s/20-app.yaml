@@ -1,0 +1,66 @@
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: txn-config, namespace: txn-monitor}
+data:
+  KAFKA_BOOTSTRAP: kafka-0.kafka.txn-monitor.svc.cluster.local:9092
+  RATE: "500"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: detector, namespace: txn-monitor}
+spec:
+  replicas: 3
+  selector: {matchLabels: {app: detector}}
+  template:
+    metadata:
+      labels: {app: detector}
+      annotations: {prometheus.io/scrape: "true", prometheus.io/port: "8000"}
+    spec:
+      securityContext: {runAsNonRoot: true, runAsUser: 10001}
+      containers:
+        - name: detector
+          image: txn-stream-monitor:latest
+          imagePullPolicy: IfNotPresent
+          envFrom: [{configMapRef: {name: txn-config}}]
+          ports: [{name: metrics, containerPort: 8000}]
+          readinessProbe:
+            httpGet: {path: /metrics, port: metrics}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true}
+---
+# Scale detectors with CPU; replicas beyond the partition count (6) would sit idle.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: {name: detector, namespace: txn-monitor}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: detector}
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource: {name: cpu, target: {type: Utilization, averageUtilization: 70}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: producer, namespace: txn-monitor}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: producer}}
+  template:
+    metadata:
+      labels: {app: producer}
+      annotations: {prometheus.io/scrape: "true", prometheus.io/port: "8001"}
+    spec:
+      securityContext: {runAsNonRoot: true, runAsUser: 10001}
+      containers:
+        - name: producer
+          image: txn-stream-monitor:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "app.producer"]
+          envFrom: [{configMapRef: {name: txn-config}}]
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true}
