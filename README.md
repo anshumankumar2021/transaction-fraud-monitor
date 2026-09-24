@@ -2,6 +2,8 @@
 
 [![ci](https://github.com/anshumankumar2021/transaction-fraud-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/anshumankumar2021/transaction-fraud-monitor/actions/workflows/ci.yml)
 
+**Live demo: [transaction-fraud-monitor.vercel.app](https://transaction-fraud-monitor.vercel.app)**
+
 A Kafka streaming pipeline that watches card transactions as they happen and
 flags suspicious activity within milliseconds: spending spikes, bursts of
 rapid purchases, and "impossible travel" between countries. It runs as
@@ -67,6 +69,15 @@ purchases, so there was no baseline to compare against yet.
 - The rules are hand-tuned thresholds on synthetic data. The natural next step
   is to feed alert outcomes back as labels and train a model.
 
+## Live demo
+
+The [live demo](https://transaction-fraud-monitor.vercel.app) replays a simulated week of transactions through the
+detector's rule engine and labels every purchase: caught fraud, false alarm, missed fraud, or part of a burst that
+gets flagged a few purchases later. Vercel functions are short-lived and can't host a Kafka broker or consumer group,
+so the demo runs `app/rules.py` directly in a serverless function (`api/simulate.py`) with a static dashboard
+(`public/index.html`). The Kafka path is covered by CI, whose `--check` step requires Kafka's alerts to match this
+engine's alerts exactly. Run the demo locally with `python -m scripts.dev_server`.
+
 ## Run it
 
 ```bash
@@ -105,6 +116,8 @@ app/detector.py     Kafka consumer group, alert producer, DLQ, Prometheus metric
 app/producer.py     synthetic transaction publisher (idempotent, keyed by card)
 app/simulate.py     traffic generator with labelled fraud incidents
 scripts/evaluate.py recall/precision/throughput, offline or through Kafka
+api/simulate.py     Vercel serverless endpoint for the live demo (real rule engine, no Kafka)
+public/index.html   live demo dashboard
 k8s/                namespace, KRaft Kafka StatefulSet, detector Deployment + HPA
 monitoring/         Prometheus scrape config and alert rules, Grafana dashboard
 ```
