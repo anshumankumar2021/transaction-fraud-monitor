@@ -1,5 +1,7 @@
 # Real-Time Transaction Stream Monitor
 
+[![ci](https://github.com/anshumankumar2021/transaction-fraud-monitor/actions/workflows/ci.yml/badge.svg)](https://github.com/anshumankumar2021/transaction-fraud-monitor/actions/workflows/ci.yml)
+
 A Kafka streaming pipeline that watches card transactions as they happen and
 flags suspicious activity within milliseconds: spending spikes, bursts of
 rapid purchases, and "impossible travel" between countries. It runs as
@@ -90,7 +92,10 @@ python -m scripts.evaluate
 ```
 
 CI (GitHub Actions) runs the unit tests and offline evaluation, builds the
-image, and runs the end-to-end evaluation against a real Kafka service container.
+image, and runs the end-to-end evaluation against a real Apache Kafka service
+container with `--check`. That check fails the build unless the Kafka pipeline's
+alerts match the offline rule engine transaction for transaction, and every
+malformed message lands in the dead-letter topic.
 
 ## Layout
 
